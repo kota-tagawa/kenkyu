@@ -10,4 +10,4 @@
 
 # その他の無視設定（必要なら追加）
 __pycache__/
-result/params/
+result/params/*
