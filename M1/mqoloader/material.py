@@ -50,6 +50,7 @@ class Material():
             img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
         self.textureID = textureID
         glBindTexture(GL_TEXTURE_2D,self.textureID)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)  # 追加
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)

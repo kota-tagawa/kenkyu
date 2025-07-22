@@ -38,13 +38,33 @@ def generate_cam_data(dir_list, focus, pimage_list, R_list):
         files = set(os.listdir(path))
         
         # 3Dデータを取得
+        path_3ddata = os.path.join(path, "3Ddata.dat")
         if "3Ddata.dat" in files:
-            point_3D = np.loadtxt(os.path.join(path, "3Ddata.dat"))
-            if len(point_3D)%2 != 0:
-                print(f"{path}/3Ddata.dat に含まれるデータ数は偶数にしてください。")
-                return -1
+            point_3D = np.loadtxt(path_3ddata)
         else:
-            print(f"{path}/3Ddata.dat が存在しません。")
+            print(f"{path_3ddata} を新たに生成します。")
+            print("3次元座標を偶数個、空白区切りで入力してください（例: 1.0 2.0 3.0）。")
+            print("終了するには空行を入力してください。")
+            point_3D = []
+
+            while True:
+                line = input(">> ")
+                if line.strip() == "":
+                    break
+                try:
+                    coords = list(map(float, line.strip().split()))
+                    if len(coords) != 3:
+                        print("3つの値を入力してください。")
+                        continue
+                    point_3D.append(coords)
+                except ValueError:
+                    print("無効な入力です。数字を入力してください。")
+
+            if len(point_3D)%2 == 0:
+                np.savetxt(path_3ddata, point_3D, fmt="%.2f")
+        
+        if len(point_3D)%2 != 0:
+            print(f"{path_3ddata} に含まれるデータ数は偶数にしてください。")
             return -1
         
         # 2Dデータを取得（手動入力 or 既存データ）
@@ -144,7 +164,7 @@ def get2D(point_num, pimage, mode):
 
 #=================================================================
 # 誤差なしでPnPLを計算
-# flag, R_PnPL, t_PnPL = PnPL_noError(folder_path, true_data)
+# flag, R_PnPL, t_PnPL = (cam_list, dir_name, true_data, R_0)
 # 
 # 引数
 #   folder_path : カメラデータのサブフォルダが入ったフォルダのパス
@@ -159,72 +179,62 @@ def get2D(point_num, pimage, mode):
 # - 2D-3Dの点対応、線対応によって生成されたデータを用いて、誤差なしでPnPLを計算する
 # - 実行結果は /CameraData/eimage_/data/param に保存
 #=================================================================
-def PnPL_noError(cam_list, true_data):
-    # 保存する
-    save_data = True
+def PnPL_noError(cam_list, dir_name, true_data, R_0):
+    # カメラ名
+    cam_name = os.path.basename(os.path.normpath(dir_name))
+    # 結果保存
+    save_data = False
+    # 結果出力
+    print_camdata = False
     
     # 収束判定のしきい値
     thd = 1.0e-8
-
-    # 回転行列の初期値
-    R_0 = np.array([[1,0,0],
-                    [0,0,-1],
-                    [0,1,0]],
-                    dtype=np.float64)
-
-    # # カメラデータの読み込み
-    # print(folder_path)
-    # cam_list = []
-    # subfolders = [f for f in os.listdir(folder_path) 
-    #               if os.path.isdir(os.path.join(folder_path, f)) and f.startswith("cam")]
-    # if subfolders:
-    #     for subfolder in subfolders:
-    #         subfolder_path = os.path.join(folder_path, subfolder)
-    #         cam = cd.CameraData()
-    #         cam.loadData(subfolder_path)
-    #         cam_list.append(cam)
-            
-    # else:
-    #     cam = cd.CameraData()
-    #     cam.loadData(folder_path)
-    #     cam_list.append(cam)
     
-    R_PnPL,t_PnPL,k_PnPL,flag,E =fc.PnPL(thd, cam_list, R_0)
+    R_PnPL, t_PnPL, E, k, flag = fc.PnPL(thd, cam_list, R_0)
 
     if flag == 1:
-        print("データが不適切です")
+        raise ValueError(f"カメラ{cam_name}の推定に失敗しました。")
+    else:
+        print(f"カメラ{cam_name}の推定を完了しました。")
 
     # カメラ位置を計算
     C = -np.dot(R_PnPL.T,t_PnPL)
 
     np.set_printoptions(precision=8,suppress=True,floatmode='fixed')
-    print("E(目的関数) : ", E)
-    print("反復回数 : ", k_PnPL)
-    print("PnPLで求めたカメラ位置\n" , C , "\n")
-    print("PnPLで求めた回転行列\n", R_PnPL, "\n")
+    if print_camdata:
+        print("E(目的関数) : ", E)
+        print("反復回数 : ", k)
+        print("PnPLで求めたカメラ位置\n" , C , "\n")
+        print("PnPLで求めた回転行列\n", R_PnPL, "\n")
 
     # 回転行列とカメラ位置の真値
     if true_data is not None:
         R0 = true_data[:, :3]
         t = true_data[:, 3].reshape(-1, 1)
         c = -np.dot(R0.T, t)
-        print("カメラ位置(真値):\n", c, "\n")
-        print("回転行列(真値):\n", R0)
-        print("R_error:\n",R_PnPL-R0)
-        print("C_error:\n",C-c)
+        if print_camdata:
+            print("カメラ位置(真値):\n", c, "\n")
+            print("回転行列(真値):\n", R0)
+            print("R_error:\n",R_PnPL-R0)
+            print("C_error:\n",C-c)
     
+    
+
     if save_data:
         # フォルダが存在しない場合作成
-        folder_name = os.path.join('result/params/', datetime.now().strftime('%Y%m%d'))
-        if not os.path.exists(folder_name):
-            os.makedirs(folder_name)
-            print(f"Folder '{folder_name}' has been created.")
-        np.savetxt(folder_name+"/k_PnPL.txt", [k_PnPL])
-        np.savetxt(folder_name+"/C.dat", C)
-        np.savetxt(folder_name+"/R_PnPL.dat", R_PnPL)
-        np.savetxt(folder_name+"/t_PnPL.dat", t_PnPL)
+        savedir_name = os.path.join(cam_name, datetime.now().strftime('%Y%m%d'))
+        savepath = os.path.join('result', 'params', savedir_name)
+        if not os.path.exists(savepath):
+            os.makedirs(savepath)
+        np.savetxt(os.path.join(savepath, "C.dat"), C)
+        np.savetxt(os.path.join(savepath, "R_PnPL.dat"), R_PnPL)
+        np.savetxt(os.path.join(savepath, "t_PnPL.dat"), t_PnPL)
         if true_data is not None:
-            np.savetxt(folder_name+"/R_error.dat", R_PnPL-R0)
-            np.savetxt(folder_name+"/C_error.dat", C-c)
+            np.savetxt(os.path.join(savepath, "R_error.dat"), R_PnPL-R0)
+            np.savetxt(os.path.join(savepath, "C_error.dat"), C-c)
+        # Eとkをファイルに保存
+        with open(os.path.join(savepath, "pnpl_score.txt"), "w") as f:
+            f.write(f"E : {E}\n")
+            f.write(f"k : {k}\n")
         
     return flag, R_PnPL, t_PnPL

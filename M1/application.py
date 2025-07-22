@@ -1,6 +1,6 @@
 # application.py
 # editor : tagawa kota, sugano yasuyuki
-# last edited : 2025/3/12
+# last edited : 2025/7/22
 # Main loop of app. Assign texture from a 360-degree image to a 3D model.
 
 # 全方位画像から透視投影画像生成
@@ -19,39 +19,34 @@ import os
 import shutil
 import math
 from PIL import Image
+import warnings
 
 class Application:
     
     #================================================
     # アプリケーションクラスのコンストラクタ
-    # __init__(self, model_path)
+    # __init__(self, model_path, config)
     #
-    # 引数
-    #   model_path : 3次元モデルのファイルパス
+    # 概要:
+    #   3Dモデルの読み込みと、カメラパラメータ推定・テクスチャ生成に必要なパラメータやフォルダの初期化を行う。
     #
-    # コンストラクタで使用するメソッド
-    #   setup_texture_folder()
-    #       - テクスチャフォルダを準備
-    #   load_3Dmodel(model_path, output_model_path)
-    #       - 3Dモデルのファイルパス model_path を読み込み、モデルとテクスチャのインスタンスを生成
-    #   initialize_texture_params()
-    #       - テクスチャの情報を初期化
-    #   initialize_camera_params
-    #       - キャリブレーションデータ読み込み、カメラパラメータ推定に用いる回転行列の設定
-    #================================================    
+    # 引数:
+    #   model_path : 読み込む3次元モデル（.mqo形式など）のファイルパス
+    #   config     : 実行オプション（テクスチャ取得を行うかどうか）
+    #
+    # 主な処理内容:
+    #   1. _setup_result_folder(model_path) : 結果出力フォルダの作成
+    #   2. _setup_texture_folder() : テクスチャ出力用フォルダの作成
+    #   3. _load_3Dmodel(model_path, output_model_path) : 3dモデルの読み込みとテクスチャ除外リストの取得
+    #   4. _initialize_texture_params() : テクスチャ関連パラメータの初期化
+    #   5. _initialize_camera_params() : 内部パラメータの読み込みと投影方向候補（Y軸回転角）の生成
+    #   6. _initialize_config(config) : 実行オプション（config）に基づくモード指定
+    #================================================
     
-    def __init__(self, model_path):
-        
-        self.eimg_count = 0
-        self.pimg_count = 0
-        self.cam_num = 0
-        self.use_truedata = False   # 真値を使用
-        self.use_adjust_texture_brightness = False   # テクスチャの明るさ調整を使用
-        
+    def __init__(self, model_path, config):
+
         # 結果出力用フォルダを作成
         output_model_path = self._setup_result_folder(model_path)
-        if output_model_path == -1:
-            raise ValueError("Failed to set up result folder")
         
         # テクスチャフォルダの準備
         self._setup_texture_folder()
@@ -64,27 +59,26 @@ class Application:
         
         # カメラ関係のパラメータ初期化
         self._initialize_camera_params()
+
+        # 各種モード設定
+        self._initialize_config(config)
     
     
     def _setup_result_folder(self,  model_path):
-        # 結果出力用フォルダを新規作成（存在する場合はそのまま）
+        # 結果出力用フォルダを作成
         result_folder = "result"
-        os.makedirs(result_folder, exist_ok=True)  # 存在しない場合のみ作成
-        
-        # 出力用3Dファイル作成 (model_pathのファイルをコピー)
-        if os.path.exists(model_path):
-            output_model_path = os.path.join(result_folder, "C5F_edited.mqo")
-            try:
-                shutil.copy(model_path, output_model_path)
-                print(f"Model file copied to {output_model_path}.")
-                return output_model_path
-            
-            except Exception as e:
-                print(f"Error copying file: {e}")
-        else:
-            print(f"Model file at {model_path} does not exist.")
-        
-        return -1 
+        os.makedirs(result_folder, exist_ok=True)
+
+        # 出力用3dモデルファイルパスを生成
+        output_model_path = os.path.join(result_folder, "C5F_edited.mqo")
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"モデルファイルが存在しません: {model_path}")
+        try:
+            shutil.copy(model_path, output_model_path)
+        except Exception as e:
+            raise IOError(f"モデルファイルのコピーに失敗しました: {e}")
+
+        return output_model_path
                 
         
     def _setup_texture_folder(self):
@@ -92,17 +86,12 @@ class Application:
         folder_name = os.path.join("result","texture")
         if os.path.exists(folder_name):
             shutil.rmtree(folder_name)
-            print(f"All data in Texture folder has been removed.")
-        
-        # テクスチャフォルダを作成
         os.makedirs(folder_name)
-        print(f"Texture Folder has been created.")
         
-        # サブフォルダを作成
+        # 三角形メッシュ、四角形メッシュ用のサブフォルダを作成
         result_folders = [os.path.join(folder_name,"3v"), os.path.join(folder_name,"4v")]
         for folder in result_folders:
             os.makedirs(folder, exist_ok=True)
-            print(f"3v/4v Folder has been created.")   
             
         # 単色テクスチャ生成
         width, height = 1600, 900
@@ -117,34 +106,46 @@ class Application:
         print('Loading %s ...' % model_path)
         self.use_normal = False
         self.model = LoadMQO(model_path, 0.0, self.use_normal)
-        print('Complete Loading !')
+
+        # テクスチャ除外リストの取得
+        model_dir = os.path.dirname(model_path)
+        texture_exclusion_path = os.path.join(model_dir, "texture_exclusion.dat")
+        self.texture_exclusion = []
+        if os.path.isfile(texture_exclusion_path):
+            self.texture_exclusion = np.loadtxt(texture_exclusion_path, comments="#", delimiter=",", dtype=int)
         
         # テクスチャ情報を記述するインスタンス生成
         self.texture_num = len(self.model.f)
         self.mqo = CreateMQO(model_path, output_model_path, self.texture_num)
+        print('Complete Loading !')
         
         
     def _initialize_texture_params(self):
-        # テクスチャ関連のパラメータを初期化
-        fnum = self.texture_num
+        # テクスチャ用配列の初期化
+        fnum = self.texture_num                                         # テクスチャ総数
         self.texture_camnum = np.full(fnum, 0)                          # テクスチャを割り当てるカメラ
         self.texture_dist = np.full(fnum, 100)                          # テクスチャカメラ間の距離
+        self.texture_angle = np.full(fnum, 180)                         # テクスチャカメラ間の角度
         self.texture_area = np.full(fnum, 0)                            # 面積
         self.texture_scale = np.full((fnum, 2), 1.0)                    # 拡大スケール
         self.texture_R = np.zeros((fnum, 3, 3), dtype=np.float64)       # 回転行列
         self.texture_V = np.empty(fnum, dtype=object)                   # 頂点の座標(可変長)
+        self.texture_uv = np.empty(fnum, dtype=object)                  # 頂点のuv座標(可変長)
         for i in range(fnum):
-            self.texture_V[i] = np.zeros((0, 3), dtype=np.float64) 
-        self.texture_brightness = np.empty(fnum, dtype=object)          # テクスチャの明るさ(先頭が採用するテクスチャの明るさ)
+            self.texture_V[i] = np.zeros((0, 3), dtype=np.float32) 
+        for i in range(fnum):
+            self.texture_uv[i] = np.zeros((0, 3), dtype=np.float32)                                        
         
         
     def _initialize_camera_params(self):
-        # キャリブレーションデータの読み込み(11008*5504)
-        self.calib_param_mat = np.loadtxt("camera_calibration/mtx.txt",delimiter=",")
-        self.param_mat = np.loadtxt("camera_calibration/mtx_true.txt",delimiter=",")
-        self.ufocus = self.calib_param_mat[0][0]
-        self.vfocus = self.calib_param_mat[1][1]
+        # キャリブレーションに用いる内部パラメータの読み込み(1.0倍)
+        self.param = np.loadtxt(os.path.join("pose_estimation","mtx.txt"),delimiter=",")
+        self.ufocus = self.param[0][0]
+        self.vfocus = self.param[1][1]
         self.focus = (self.ufocus + self.vfocus)*0.5
+        # 透視投影画像生成に用いる内部パラメータの読み込み(解像度0.5倍)
+        self.param_mat = np.loadtxt(os.path.join("pose_estimation","mtx_half.txt"),delimiter=",")
+        self.param_scale = 0.5
         
         # カメラパラメータ推定に用いる透視投影画像の角度設定
         def rot_y(theta_deg):
@@ -158,6 +159,10 @@ class Application:
         
         angles_deg = [0, 180, -90, 90, -30, 30, -150, 150]
         self.R_proj_option = [rot_y(angle) for angle in angles_deg]
+
+    def _initialize_config(self, config):
+        # オプションを初期化
+        self.estimate_camparam = config.get('estimate_camparam', False)
         
         
     #================================================
@@ -174,16 +179,20 @@ class Application:
     #================================================    
     
     def mainloop(self, eimage_path):
+        print(eimage_path)
         # 全方位画像読み込み
         pimage_paths, pimages, R_proj_list = self.read_eimage(eimage_path)
         # カメラパラメータ推定
         self.estimate_camera_params(pimage_paths, pimages, R_proj_list)
-        # テクスチャ情報を計算
-        self.culc_texture_params()
-        # カメラ情報書き込み
-        self.mqo.write_campos(self.R_cam, self.t_cam, self.cam_num)
-        # ３次元モデルファイル書き込み
-        self.mqo.write_mqo()
+
+        # テクスチャ生成
+        if not self.estimate_camparam:
+            # テクスチャ情報を計算
+            self.culc_texture_params()
+            # カメラ情報書き込み
+            self.mqo.write_campos(self.R_cam, self.t_cam, self.cam_num)
+            # ３次元モデルファイル書き込み
+            self.mqo.write_mqo()
 
     
     #================================================
@@ -205,66 +214,62 @@ class Application:
     
     def read_eimage(self, eimage_path):
         # 初期化
-        self.pimg_count = 0
+        W_angle, H_angle = 90, 90
+        R_0 = np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float64)
+
+        # 結果保存用配列
         pimage_list = []
         R_proj_list = []
         pimage_paths = []
-        # 初期回転行列
-        R0 = np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float64)
         
         # 全方位画像ファイル名からカメラ番号を取得
         eimage_filename = os.path.splitext(os.path.basename(eimage_path))[0]
         self.cam_num = int(eimage_filename.split('_')[-1])
         
-        # 対応するフォルダを作成
+        # 全方位カメラに対応するフォルダを作成
         folder_name = os.path.join('pose_estimation','camera_data','{}'.format(eimage_filename))
         if not os.path.exists(folder_name):
             os.makedirs(folder_name)
-            print(f"Folder '{folder_name}' has been created.")
+
+        # キャリブレーション用パラメータ計算
+        eimage = cv2.imread(eimage_path)
+        ewidth, eheight = eimage.shape[1], eimage.shape[0]
+        pwidth = int(2 * math.tan((W_angle * np.pi/180.0)/2) * (ewidth/(2*np.pi)))
+        pheight = int(2 * math.tan((H_angle * np.pi/180.0)/2) * (eheight/np.pi))
+        angle_param_u = pwidth * np.pi / ewidth
+        angle_param_v = 0.5 * pheight * np.pi / eheight
+        map_e2p = E2P(ewidth, eheight, pwidth, pheight)
         
-        # 全方位画像読み込み、全方位画像パラメータ保存
-        self.eimage = cv2.imread(eimage_path)
-        self.eimg_count += 1
-        self.ewidth, self.eheight = self.eimage.shape[1], self.eimage.shape[0]
-        
-        # 透視投影画像パラメータ保存
-        W_angle, H_angle = 90, 90
+        # テクスチャ生成用パラメータ保存
+        self.ewidth, self.eheight = ewidth*self.param_scale, eheight*self.param_scale
         self.pwidth = int(2 * math.tan((W_angle * np.pi/180.0)/2) * (self.ewidth/(2*np.pi)))
         self.pheight = int(2 * math.tan((H_angle * np.pi/180.0)/2) * (self.eheight/np.pi))
-        self.angle_param_u = self.pwidth * np.pi / self.ewidth
-        self.angle_param_v = 0.5 * self.pheight * np.pi / self.eheight
         
-        # 透視投影マップ生成
-        self.map = E2P(self.ewidth, self.eheight, self.pwidth, self.pheight)
-        
-        # 使用する透視投影画像の角度(self.R_optionのindex)を設定
+        # 仮想カメラの角度(self.R_proj_optionのindex)を指定する。ファイルがない場合は正面(index=0)を指定する。
         R_proj_index_filename = os.path.join(folder_name, 'use_R_index.txt')
-        # ファイルの存在を確認して読み込む
         try:
             R_proj_index = np.loadtxt(R_proj_index_filename, delimiter=',', dtype=int)
-            if R_proj_index.ndim == 0:  # スカラー（0次元）なら1次元配列に変換
-                R_proj_index = np.array([R_proj_index])
         except FileNotFoundError:
-            print(f"{R_proj_index_filename} が見つかりません。新しく作成します。")
-            with open(R_proj_index_filename, 'w') as f:
-                f.write("0\n")
+            print(f"{R_proj_index_filename} が見つかりません。正面のものを使用します")
             R_proj_index = np.array([0], dtype=int)
+        if R_proj_index.ndim == 0:  
+            R_proj_index = np.array([R_proj_index]) # スカラー（0次元）なら1次元配列に変換
         
         for index in R_proj_index:
-            # 仮想カメラの向き(透視投影画像の回転行列)
-            R = np.dot(R0, self.R_proj_option[index].T)
-            # マップ生成
-            self.map.generate_map(self.angle_param_u, self.angle_param_v, R, scale = 1.0)
-            pimage = self.map.generate_image(self.eimage)
-            # カメラ番号ごとにディレクトリ生成
+            # 仮想カメラ番号に対応するフォルダを作成
             subfolder_name = os.path.join(folder_name, 'cam_{}'.format(index))
             if not os.path.exists(subfolder_name):
                 os.makedirs(subfolder_name)
-                print(f"Folder '{subfolder_name}' has been created.")
-            # 透視投影画像の保存
+                # print(f"Folder '{subfolder_name}' has been created.")
+
+            # 透視投影画像生成
+            R = np.dot(R_0, self.R_proj_option[index].T) # 仮想カメラの向き
+            map_e2p.generate_map(angle_param_u, angle_param_v, R, scale = 1.0)
+            pimage = map_e2p.generate_image(eimage)
             filename = os.path.join(subfolder_name, "pimage_{}.png".format(index))
             cv2.imwrite(filename, pimage)
             
+            # 結果を保存
             pimage_paths.append(subfolder_name)
             pimage_list.append(pimage)
             R_proj_list.append(self.R_proj_option[index])
@@ -283,7 +288,6 @@ class Application:
     # 
     # 概要：
     # - 複数の角度の透視投影画像を用いてカメラの外部パラメータを推定する
-    # - self.use_truedata = 1 の場合は、推定を行わず実測値を使用する
     #================================================
     
     def estimate_camera_params(self, pimage_paths, pimages, R_proj_list):
@@ -293,209 +297,132 @@ class Application:
         try:
             true_data = np.loadtxt(true_data_filename)
         except FileNotFoundError:
-            print(f"{true_data_filename} が見つかりません。測定値を使用せずに実行します。")
-            self.use_truedata = False
+            # print(f"{true_data_filename} が見つかりません。測定値との比較は行いません。")
             true_data = None
-
-        # 測定値を使用(推定値は使用しない)
-        if self.use_truedata:
-            print("カメラパラメータ推定を行わず、代わりに測定値を使用します。")
-            self.R_cam = true_data[:, :3]
-            self.t_cam = true_data[:, 3].flatten()
       
-        else:
-            # 3Dモデルと画像を対応付け
-            datafolder = pnpl.generate_cam_data(pimage_paths, self.focus, pimages, R_proj_list)
-            if datafolder == -1:
-                raise ValueError("2D-3D対応付け失敗")
+        # 3Dモデルと画像を対応付け
+        datafolder = pnpl.generate_cam_data(pimage_paths, self.focus, pimages, R_proj_list)
+        if datafolder == -1:
+            raise ValueError("2D-3D対応付け失敗")
 
-            # カメラの外部パラメータを推定
-            flag, R, t = pnpl.PnPL_noError(datafolder, true_data)
-            if flag == 1:
-                raise ValueError("カメラパラメータ計算失敗")
-            else:
-                self.R_cam = R
-                self.t_cam = t.flatten()
+        # カメラの外部パラメータを推定
+        R_0 = np.array([[1,0,0],[0,0,-1],[0,1,0]],dtype=np.float64)
+        flag, R, t = pnpl.PnPL_noError(datafolder, dir_name, true_data, R_0)
+        if flag == 1:
+            raise ValueError("カメラパラメータ計算失敗")
+        else:
+            self.R_cam = R
+            self.t_cam = t.flatten()
                 
     
     #================================================
     # テクスチャのパラメータ計算
     # culc_texture_params(self)
     #
-    # 返り値
-    # - success : 正しく計算できた場合1
-    #
     # 処理概要
-    # - メッシュの座標を変換し、テクスチャのパラメータを計算
-    # - カメラ番号、メッシュの座標、メッシュ重心を向く回転行列、カメラ中心までの距離、面積を計算
-    # - テクスチャの明るさを調整するため、テクスチャの輝度と同一テクスチャの平均輝度を計算
+    # - メッシュの座標を変換、距離(角度、面積)の条件が良い場合、テクスチャ情報を更新する
     #   
-    # 使用するメソッド
-    #   self.transformation(vertices)
-    #       - メッシュ頂点の世界座標系 v_world をカメラ座標系、スクリーン座標系に変換する
+    # 使用メソッド:
+    #   - self.transformation(vertices, i)
+    #       入力：メッシュの頂点（世界座標系）、メッシュ番号
+    #       出力：射影用回転行列、投影頂点、スケール、距離、角度、面積
     #================================================   
      
     def culc_texture_params(self):
+
         m = self.model
-        scale = np.array([1.0, 1.0])
-        
         for i, face in enumerate(self.model.f):
-            # メッシュの頂点座標を取得
+
+            # メッシュの世界座標を取得
             v_world = np.array([[m.x[face[idx]], m.y[face[idx]], m.z[face[idx]]] 
                                 for idx in range(len(face))])
-                
-            # メッシュの座標変換
-            flag, R_proj, v_proj, dist, area = self.transformation(v_world, scale, i)
-            if flag == 1:
-                continue
-            
-            # 三角形判定
-            is_triangle = (len(face) == 3)
-            is_rectangle = (len(face) == 4)
-            # メッシュが透視投影画像内に収まっているかを判定
-            is_within_image_bounds = (np.all((v_proj[:, 0] <= self.pwidth) & (v_proj[:, 0] >= 0)) and 
-                                    np.all((v_proj[:, 1] <= self.pheight) & (v_proj[:, 1] >= 0)))
-            
-            if is_triangle and is_within_image_bounds:
-                if self.use_adjust_texture_brightness:
-                    # 平均輝度を計算
-                    brightness = self.culc_brightness(R_proj, v_proj)
-                    if self.texture_brightness[i] is not None:
-                        # すでに輝度が格納されている場合、それに新しい輝度を追加する
-                        if self.texture_dist[i] > dist:
-                            # 先頭に追加
-                            self.texture_brightness[i] = np.vstack([brightness, self.texture_brightness[i]])
-                        else:
-                            self.texture_brightness[i] = np.vstack([self.texture_brightness[i], brightness])
-                    else:
-                        # 初回の場合はそのまま格納
-                        self.texture_brightness[i] = brightness
-                
-            elif is_rectangle:
-                # 各頂点のx、y座標から重心までの距離を計算
-                image_center = np.array([self.pwidth / 2, self.pheight / 2])
-                x_distances = np.max(np.abs(v_proj[:, 0] - image_center[0]))
-                y_distances = np.max(np.abs(v_proj[:, 1] - image_center[1])) 
-                # 画像の幅と高さをvの座標の範囲に基づいて計算
-                new_width = int(np.ceil(2*x_distances)) 
-                new_height = int(np.ceil(2*y_distances)) 
-                # 画像のスケール、マージンを計算
-                scalex = max(1.0, new_width / self.pwidth)
-                scaley = max(1.0, new_height / self.pheight)
-                scale = np.array([scalex, scaley])
-                # メッシュの座標変換
-                flag, R_proj, v_proj, dist, area = self.transformation(v_world, scale)
+            # メッシュのuv座標を取得
+            uv = np.array(m.uv[i])
 
-            # 各種テクスチャ情報を更新
-            if self.texture_dist[i] > dist:
+            # 世界座標から透視投影画像上の座標に変換
+            try:
+                R_proj, v_proj, scale, dist, angle, area = self.transformation(v_world, i)
+            except ValueError as e:
+                # print(e)
+                continue
+
+            # 各種テクスチャ情報を更新(より面積が大きい方を採用)
+            # 除外対象のテクスチャは取り除く(障害物越しに取得してしまうもの)
+            texture_num = np.array([self.cam_num, i], dtype = int)
+            is_excluded = False
+            if len(self.texture_exclusion) > 0:
+                is_excluded = np.any(np.all(self.texture_exclusion == texture_num, axis=1))
+
+            if (self.texture_angle[i] > angle) and (not is_excluded):
                 self.texture_camnum[i] = self.cam_num
                 self.texture_dist[i] = dist
+                self.texture_angle[i] = angle
                 self.texture_area[i] = area
                 self.texture_R[i] = R_proj
                 self.texture_V[i] = v_proj
                 self.texture_scale[i] = scale
-                
-          
-                    
-    #================================================
-    # テクスチャの輝度を計算
-    # culc_brightness(self, R)
-    #
-    # 引数
-    #   R_proj : 透視投影画像の視線方向の回転行列
-    #   v_proj : スクリーンに投影された座標
-    #
-    # 処理概要
-    # - 透視投影画像を生成し、画像b,g,rの平均輝度を計算する
-    # 
-    #================================================   
-     
-    def culc_brightness(self, R_proj, v_proj):
-        self.map.generate_map(self.angle_param_u, self.angle_param_v, R_proj, 1.0)
-        img = self.map.generate_image(self.eimage)
-        self.pimg_count += 1
+                self.texture_uv[i] = uv
 
-        # テクスチャとして用いる領域内のピクセルを抽出
-        mask = np.zeros_like(img[:, :, 0], dtype=np.uint8)
-        v_2d = v_proj[:, :2].astype(np.int32)
-        cv2.fillConvexPoly(mask, v_2d, 255)
-        triangle_region = cv2.bitwise_and(img, img, mask=mask)
-        
-        # 領域内の平均輝度の計算
-        mean_b = np.mean(triangle_region[:, :, 0][mask == 255])
-        mean_g = np.mean(triangle_region[:, :, 1][mask == 255])
-        mean_r = np.mean(triangle_region[:, :, 2][mask == 255])
-
-        return np.array([mean_b, mean_g, mean_r])
-    
     
     #================================================
-    # 座標変換
-    # flag, R, v_proj, dist, area = transformation(self, v_world, scale)
+    # 座標系変換
+    # R_proj, v_proj, scale, dist, angle, area = transformation(self, v_world, i)
     # 
     # 引数
     #   v_world：世界座標系のメッシュの頂点座標
-    #   scale : 透視投影画像生成時に用いるスケール
-    #   i : テクスチャ番号
+    #   i : メッシュ番号
     #
     # 戻り値
-    #   flag : 座標変換のフラグ(1:失敗)
     #   R_proj : メッシュ重心を向く回転行列
-    #   v_proj : スクリーンに投影された座標
+    #   v_proj : 透視投影画像上に投影された座標
     #   dist : メッシュの重心からの距離
+    #   angle : メッシュの方向ベクトルと法線ベクトルの角度
     #   area : メッシュの投影面積
     #
     # 処理概要
-    #  - 世界座標系からカメラ座標系に変換し、さらにメッシュ重心を向くように視線変換する
+    #  - 世界座標系からカメラ座標系に変換し、透視投影画像上の座標に変換する
+    #  - メッシュが透視投影画像の中に納まるように、透視投影画像のスケールを拡大する
     #================================================ 
     
-    def transformation(self, v_world, scale, i):
+    def transformation(self, v_world, i):
         # しきい値
-        thd_dist = 10
-        thd_angle = 70
+        thd_dist = 5
+        thd_angle = 80
+        max_width = 10000
+        max_height = 10000
         
         # 初期化
-        flag = 0
         R_proj = np.eye(3)
+        scale = np.array([1.0, 1.0])
+        width, height = self.pwidth, self.pheight
 
         # カメラ座標系に変換
         v_cam = np.array([np.dot(self.R_cam, v) + self.t_cam for v in v_world])
         
-        # 三角形の重心を計算
+        # メッシュの重心までの距離がしきい値以上のテクスチャは採用しない
         centroid = np.mean(v_cam, axis = 0)
         dist = np.linalg.norm(centroid)
-        # メッシュの重心までの距離がしきい値以上のとき消去
         if dist > thd_dist:
-            flag = 1
-            print("texture({}) : over the threshold({}m)".format(i, dist))
-            return flag, R_proj, v_world, dist, 0
+            raise ValueError("texture({}_{}) : dist exceeds the threshold ({}m) ".format(self.cam_num, i, dist))
         
-        # メッシュを重心にシフト
-        # v_cam_shifted = v_cam - centroid
-        # A_cov = np.zeros((3, 3))
-        # for v in v_cam_shifted:
-        #     A_cov += np.outer(v, v) # 外積を累積して共分散行列を作成
-        # # 法線ベクトルを計算   →　使用していない 
-        # eigenvalues, eigenvectors = np.linalg.eig(A_cov) # 固有値計算
-        # normal = eigenvectors[:, np.argmin(np.abs(eigenvalues))]
-        # # 法線ベクトルの符号調整
-        # if np.dot(centroid, normal) < 0.0:
-        #     normal = -normal
+        # メッシュの法線ベクトル、方向ベクトルを計算
+        normal = np.cross(v_cam[1] - v_cam[0], v_cam[2] - v_cam[0])
+        norm_vec = normal / np.linalg.norm(normal)
+        view_vec = centroid / np.linalg.norm(centroid)
+        # 法線ベクトルの符号調整
+        if np.dot(view_vec, norm_vec) < 0.0:
+            raise ValueError("texture({}_{}) : backside".format(self.cam_num, i))
             
-        # 重心方向を向くような回転行列を計算
-        v_x, v_y, v_z = centroid[0], centroid[1], centroid[2]
-        angle = np.degrees(np.arctan2(v_y, np.sqrt(v_x**2 + v_z**2)))
-        # 仰角が大きいテクスチャを消去
-        if angle > thd_angle:
-            flag = 1
-            print("texture({}) : over the angle({}°)".format(i, angle))
-            return flag, R_proj, v_world, dist, 0
+        # 方向ベクトルと法線ベクトルのなす角が大きいテクスチャは採用しない
+        cos_theta = np.clip(np.dot(view_vec, norm_vec), -1.0, 1.0)
+        angle = np.degrees(np.arccos(cos_theta))
+        if not (angle < thd_angle):
+            raise ValueError("texture({}_{}) : angle exceeds the threshold ({:.2f}°)".format(self.cam_num, i, angle))
             
-        # Z軸を重心方向に合わせる(法線ベクトルを用いる時はここを変更)
-        Z = centroid / np.linalg.norm(centroid)
+        # Z軸を重心方向に合わせる(法線ベクトルを用いる時はここをnorm_vecに変更)
+        Z = view_vec
         # 射影行列を計算
         P = np.eye(3) - np.outer(Z, Z)
-        # 回転行列を計算
         y = np.dot(P, np.array([0, 1, 0]))
         if np.linalg.norm(y) < 1e-10:
             Y = np.array([0, 0, -1])
@@ -505,21 +432,50 @@ class Application:
             X = np.cross(Y, Z)
         R_proj = np.column_stack((X, Y, Z))
         
-        # 内部パラメータ行列にスケールを適用
-        scaled_param_mat = self.param_mat.copy()
-        scaled_param_mat[0, 2] *= scale[0]
-        scaled_param_mat[1, 2] *= scale[1]
-        
-        # 三角形メッシュの座標を画像面に投影
-        v_proj = np.zeros_like(v_cam)
-        for idx, vertex in enumerate(v_cam):
-            cam_coords = np.dot(R_proj.T, vertex) # メッシュ重心方向への回転を適用
-            proj_coords = np.dot(scaled_param_mat, cam_coords) # 内部パラメータ行列を適用
-            proj_coords[0] /= proj_coords[2]
-            proj_coords[1] /= proj_coords[2]
-            v_proj[idx] = proj_coords
+        # カメラ座標を透視投影画像上の2D座標に変換
+        def _project_vertices(v_cam, R_proj, param_mat, scale):
+            scaled_param_mat = param_mat.copy() # 内部パラメータに拡大縮小を適用
+            scaled_param_mat[0, 2] *= scale[0]
+            scaled_param_mat[1, 2] *= scale[1]
+
+            v_proj = np.zeros_like(v_cam)
+            for idx, vertex in enumerate(v_cam):
+                rotated = np.dot(R_proj.T, vertex)  # メッシュ重心方向への回転
+                projected = np.dot(scaled_param_mat, rotated)
+                projected[:2] /= projected[2]
+                v_proj[idx] = projected
+
+            return v_proj
+
+        while True:
+            v_proj = _project_vertices(v_cam, R_proj, self.param_mat, scale)
+
+            # メッシュが透視投影画像内に収まっているかを判定
+            is_within_image_bounds = (
+                np.all((v_proj[:, 0] > -1, v_proj[:, 0] < width+1)) and
+                np.all((v_proj[:, 1] > -1, v_proj[:, 1] < height+1))
+            )
+            if is_within_image_bounds:
+                break
+
+            # 画像中心からの最大距離をもとに透視投影画像のサイズを更新
+            image_center = np.array([width / 2, height / 2])
+            max_x_offset = np.max(np.abs(v_proj[:, 0] - image_center[0]))
+            max_y_offset = np.max(np.abs(v_proj[:, 1] - image_center[1]))
+            new_width = max(self.pwidth, int(np.ceil(2 * max_x_offset)))
+            new_height = max(self.pheight, int(np.ceil(2 * max_y_offset)))
+            if width > max_width or height > max_height:
+                warnings.warn(
+                    f"texture({self.cam_num}_{i}): scale too large ({new_width}, {new_height}). "
+                    f"Consider reducing the input image size to avoid memory issues.",
+                    UserWarning
+                )
             
-        # 面積を求める
+            # 透視投影画像のスケールを更新
+            width, height = new_width, new_height
+            scale = np.array([width / self.pwidth, height / self.pheight])
+    
+
         # 面積計算（四角形の場合、三角形2つ分を合計）
         if len(v_proj) == 4:
             area = (
@@ -529,145 +485,99 @@ class Application:
         else:
             area = 0.5 * np.linalg.norm(np.cross(v_proj[1] - v_proj[0], v_proj[2] - v_proj[0]))
 
-        return flag, R_proj, v_proj, dist, area
-    
-                        
+        return R_proj, v_proj, scale, dist, angle, area
+
+
     #================================================
     # テクスチャを生成 
     # generate_texture(self, eimage_path)
     #
     # 引数
-    #   eimage_path：全方位画像のリスト
+    #   eimage_path：全方位画像パスを含むリスト
     # 
-    # 概要：得られたテクスチャ情報をもとに、全方位画像からテクスチャを生成する
-    # 画像を開く回数を減らしたい
-    # 焦点距離が変わってしまう、、、
+    # 概要：計算されたテクスチャ情報をもとに全方位画像からテクスチャを生成し、3Dモデルファイルを更新する
     #================================================    
     
     def generate_texture(self, eimage_path):
         # 画像名の時はリストに変換
         if isinstance(eimage_path, str):
             eimage_path = [eimage_path]  
-        # 画像を最初にすべて読み込む
-        loaded_images = [cv2.imread(path) for path in eimage_path]
+
+        # 全方位画像の番号を指定して読み込む
+        loaded_images = {}
+        for path in eimage_path:
+            eimage_filename = os.path.splitext(os.path.basename(path))[0]
+            cam_num = int(eimage_filename.split('_')[-1])
+            eimage = cv2.imread(path)
+            loaded_images[cam_num] = cv2.resize(eimage, (0, 0), fx=self.param_scale, fy=self.param_scale)
         
         # 全てのテクスチャ情報を更新
         for i in range(self.texture_num):
             # テクスチャ情報の読み込み
             camnum = self.texture_camnum[i]
-            if len(loaded_images) > 1:
-                eimage = loaded_images[camnum]
-            else:
-                eimage = loaded_images[0]
-            vertices = np.array([[point[0], point[1]] for point in self.texture_V[i]], dtype=np.float32)
             vnum = len(self.texture_V[i])
-            pwidth = int(np.ceil(self.pwidth * self.texture_scale[i][0]))
-            pheight = int(np.ceil(self.pheight * self.texture_scale[i][1]))
-            # 透視投影画像の生成
-            R = self.texture_R[i]
-            self.map.generate_map(self.angle_param_u, self.angle_param_v, R, scale = 1.0)
             
-            # 3頂点のテクスチャの処理
-            if vnum == 3:
-                v_proj = vertices
-                img_proj = self.map.generate_image(eimage)
-                # テクスチャ画像輝度更新
-                if self.use_adjust_texture_brightness:
-                    if self.texture_brightness[i].ndim > 1:                                 # テクスチャが複数割り当てられている場合のみ
-                        brightness = self.texture_brightness[i][0]                          # 採用されたテクスチャの輝度(先頭に存在する)
-                        target_brightness = np.mean(self.texture_brightness[i], axis=0)     # 目標値はテクスチャの輝度平均
-                        img_proj = self.apply_average_brightness(img_proj, brightness, target_brightness)
-            
-            # 4頂点のテクスチャの処理
-            elif vnum == 4:
-                # ホモグラフィー変換を実行
-                v_proj = np.array([[0, 0],[pwidth, 0],[pwidth, pheight],[0, pheight]],dtype=np.float32)
-                H, _ = cv2.findHomography(vertices, v_proj)
-                
-                # 透視投影画像のサイズを変更して生成
-                angle_param_u = pwidth * np.pi / self.ewidth
-                angle_param_v = 0.5 * pheight * np.pi / self.eheight
-                map = E2P(self.ewidth, self.eheight, pwidth, pheight)
-                map.generate_map(angle_param_u, angle_param_v, R, scale = 1.0)
-                
-                # 画像を変換
-                img = map.generate_image(eimage)
-                img_proj = cv2.warpPerspective(img, H, (pwidth, pheight))
-            
-            else:
+            # テクスチャ生成失敗
+            if vnum == 0:
                 print(f"texture({i})：texture not generated")
                 continue
+            else:
+                eimage = loaded_images[camnum]
+
+            # 透視投影画像の生成
+            pwidth = int(np.ceil(self.pwidth * self.texture_scale[i][0]))
+            pheight = int(np.ceil(self.pheight * self.texture_scale[i][1]))
+            map = E2P(self.ewidth, self.eheight, pwidth, pheight)
+            angle_param_u = pwidth * np.pi / self.ewidth
+            angle_param_v = 0.5 * pheight * np.pi / self.eheight
+            R = self.texture_R[i]
+            map.generate_map(angle_param_u, angle_param_v, R, scale = 1.0)
+            img_org = map.generate_image(eimage)
+
+            # 射影変換行列を計算
+            v_org = np.array([[point[0], point[1]] for point in self.texture_V[i]], dtype=np.float32)
+            v_proj = np.array(self.texture_uv[i], dtype=np.float32)
+            v_proj[:, 0] *= pwidth
+            v_proj[:, 1] *= pheight
+            if vnum == 3:
+                M = cv2.getAffineTransform(v_org, v_proj)
+                img_proj = cv2.warpAffine(img_org, M, (pwidth, pheight))
+            elif vnum == 4:
+                H = cv2.getPerspectiveTransform(v_org, v_proj)
+                img_proj = cv2.warpPerspective(img_org, H, (pwidth, pheight))
                 
+            
+            def _annotate_texture(img, v):
+                # 線と頂点を描画
+                # for i in range(len(v)): 
+                #     pt1 = int(v[i][0]), int(v[i][1])
+                #     pt2 = int(v[(i + 1) % len(v)][0]), int(v[(i + 1) % len(v)][1])
+                #     cv2.circle(img, pt1, 1, (255, 255, 255), 1)
+                #     cv2.line(img, pt1, pt2, (255, 255, 255), thickness=1)
+
+                # マスク適用
+                pts = np.array(v, dtype=np.int32).reshape((-1, 1, 2))
+                mask = np.zeros(img.shape[:2], dtype=np.uint8)
+                cv2.fillPoly(mask, [pts], 255)
+                annotate_img = cv2.bitwise_and(img, img, mask=mask)
+
+                return annotate_img
+    
+            # テクスチャに様々な情報を付加
+            image_with_masked = _annotate_texture(img_proj, v_proj)
+
             # テクスチャ画像保存
-            image_with_vertices = self.draw_vertices_edge(img_proj, v_proj, camnum)
             texture_filename = os.path.join('texture_{}_{}.png'.format(camnum, i))
             subfolder = os.path.join('texture','{}v'.format(str(vnum)))
-            filename = os.path.join('result', subfolder, texture_filename)
-            cv2.imwrite(filename, image_with_vertices)
+            texture_path = os.path.join(subfolder, texture_filename)
+            cv2.imwrite(os.path.join('result', texture_path), image_with_masked)
             
             # vは透視投影画像サイズで正規化
             v_proj[:, 0] /= pwidth
             v_proj[:, 1] /= pheight
             # 3次元モデル情報のアップデート
-            self.mqo.update_mqo(v_proj, texture_filename, i, self.eimg_count)
+            self.mqo.update_mqo(v_proj, texture_path, i)
             # ３次元モデルファイル書き込み
             self.mqo.write_mqo()
             # テクスチャ記述完了
-            print(f"texture({i})：The texture was generated [{filename}]")
-
-
-    #================================================
-    # 平均輝度を画像に適用
-    # image = apply_average_brightness(self, image, mean_brightness, target_brightness):
-    # 
-    # 引数
-    #   image : 透視投影画像(テクスチャ)
-    #   mean_brightness : 画像b,g,rの平均輝度
-    #   target_brightness : 複数視点の画像b,g,rの平均輝度の平均
-    # 
-    # 返り値
-    #   image : 輝度を調整した画像
-    #================================================    
-    
-    def apply_average_brightness(self, image, mean_brightness, target_brightness):
-        # 平均色を基に補正係数を計算
-        mean_b, mean_g, mean_r = mean_brightness
-        ref_b, ref_g, ref_r = target_brightness
-
-        # チャンネルごとのスケール係数を計算
-        b_scale = ref_b / mean_b if mean_b != 0 else 1.0
-        g_scale = ref_g / mean_g if mean_g != 0 else 1.0
-        r_scale = ref_r / mean_r if mean_r != 0 else 1.0
-
-        # 各チャンネルにスケールを適用して輝度を調整
-        image[:, :, 0] = cv2.convertScaleAbs(image[:, :, 0], alpha=b_scale)
-        image[:, :, 1] = cv2.convertScaleAbs(image[:, :, 1], alpha=g_scale)
-        image[:, :, 2] = cv2.convertScaleAbs(image[:, :, 2], alpha=r_scale)
-
-        # 調整した画像を保存
-        return image
-    
-    
-    #================================================
-    # 頂点、辺を画像に書き込み
-    # draw_vertices_edge(self, img, v, camnum):
-    #================================================    
-    def draw_vertices_edge(self, img, v, camnum):
-        if camnum == 0:
-            color = (255, 0, 0)
-        elif camnum == 1:
-            color = (0, 255, 0)
-        elif camnum == 2:
-            color = (0, 0, 255)
-        else:
-            color = (0, 0, 0)
-        for i in range(len(v)): 
-            cv2.circle(img, (int(v[i][0]), int(v[i][1])), 1, color, 1)
-            if i+1 < len(v):
-                pt1 = int(v[i][0]), int(v[i][1])
-                pt2 = int(v[i+1][0]), int(v[i+1][1])
-            elif i+1 == len(v):
-                pt1 = int(v[i][0]), int(v[i][1])
-                pt2 = int(v[0][0]), int(v[0][1])
-            cv2.line(img, pt1, pt2, color, thickness=1)
-        return img
+            print(f"texture({i})：The texture was generated [{texture_path}]")

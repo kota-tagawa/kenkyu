@@ -25,7 +25,6 @@ class CreateMQO:
         self.dist_list = np.full(FNUM, 5)               # 距離情報
         self.area_list = np.full(FNUM, 0)               # 面積情報
         self.brightness_list = np.zeros((FNUM, 3))      # 明るさ情報
-        self.material_list = []                         # マテリアル情報
         self.lines = self.read_mqo()                      
 
     # MQOファイルの読み込み
@@ -162,44 +161,39 @@ class CreateMQO:
 
     #================================================
     # MQOファイルを更新
-    # update_mqo(self, uv, texture, index, cam_num):
+    # update_mqo(self, uv, texture, index):
     #
     # 引数
     # - texture : 割り当てるテクスチャのパス
     # - uv : 割り当てるuv座標
     # - index : 割り当てるインデックス
-    # - cam_num : 全方位カメラ番号
     # 
     # 概要
     # - MQOファイルを解析して、テクスチャ情報とuv情報のセクションを読み込む
     # - それぞれのセクションを編集
     # - 該当する部分に挿入して、MQOファイルの内容を更新する
     #================================================
-    def update_mqo(self, uv, texture, index, cam_num):
+    def update_mqo(self, uv, texture, index):
         # material(テクスチャ情報)とface(uv座標)のセクションを解析
         material, face = self.parse_material_and_face_sections()
         # Materialの個数(カメラ用テクスチャ+1)
         material_num = self.FNUM + 1
-        # material_num = self.FNUM + cam_num + 1
         # テクスチャ情報を編集
-        if material:
+        if material and texture is not None:
             edited_material = self.edit_material_section(material, texture, index)
             self.lines = [line for line in self.lines if line not in material]
             insertion_point = self.lines.index('Material %s {\n' % str(material_num))
             self.lines[insertion_point+1:insertion_point+1] = edited_material
 
         # uv情報を編集
-        if face:
+        if face and uv is not None:
             if len(uv) == 3:
                 edited_face = self.edit_face_section_3v(face, uv, index)
-            elif len(uv) == 4:
+            else:
                 edited_face = self.edit_face_section_4v(face, uv, index)    
             self.lines = [line for line in self.lines if line not in face]
             insertion_point = self.lines.index('\tface %s {\n' % str(self.FNUM))
             self.lines[insertion_point+1:insertion_point+1] = edited_face
-        
-        # 初期化
-        self.material_list = []
         
             
     #================================================
@@ -242,14 +236,14 @@ class CreateMQO:
         cam_object.append('\tnormal_weight 1\n')
         cam_object.append('\tcolor 1 0 0\n')
         cam_object.append('\tcolor_type 0\n')
-        cam_object.append('\tvertex 1 {\n')
+        cam_object.append('\tvertex 5 {\n')
         cam_object.append('\t\t%s %s %s\n' %(vertices[0][0], vertices[0][1], vertices[0][2]))
         cam_object.append('\t\t%s %s %s\n' %(vertices[1][0], vertices[1][1], vertices[1][2]))
         cam_object.append('\t\t%s %s %s\n' %(vertices[2][0], vertices[2][1], vertices[2][2]))
         cam_object.append('\t\t%s %s %s\n' %(vertices[3][0], vertices[3][1], vertices[3][2]))
         cam_object.append('\t\t%s %s %s\n' %(vertices[4][0], vertices[4][1], vertices[4][2]))
         cam_object.append('\t}\n')
-        cam_object.append('\tface 5 {\n')
+        cam_object.append('\tface 6 {\n')
         cam_object.append('\t\t3 V(0 1 2) M(%s) UV(0 0 1 0 1 1)\n' % texture_num)
         cam_object.append('\t\t3 V(0 2 3) M(%s) UV(0 0 1 0 1 1)\n' % texture_num)
         cam_object.append('\t\t3 V(0 3 4) M(%s) UV(0 0 1 0 1 1)\n' % texture_num)
@@ -258,10 +252,11 @@ class CreateMQO:
         cam_object.append('\t\t3 V(2 3 4) M(%s) UV(0 0 1 0 1 1)\n' % texture_num)
         cam_object.append('\t}\n')
         cam_object.append('}\n')
-        # cam_objectを文字列に変換
+        # # cam_objectを文字列に変換
         cam_object_str = ''.join(cam_object)
         # "Eof" 行の前に新しいオブジェクトを挿入
         for i, line in enumerate(self.lines):
-            if 'Eof' in line:
-                self.lines.insert(i, cam_object_str)
+            if line.strip() == 'Eof':
+                insert_index = i  # Eofの位置を取得
+                self.lines[insert_index:insert_index] = cam_object_str  # その位置に行として挿入
                 break

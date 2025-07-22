@@ -1,0 +1,14 @@
+# 画像ファイル・フォルダを無視する
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.gif
+
+# ただし model/texture フォルダは除外（管理対象に含める）
+!model/texture
+
+# その他の無視設定（必要なら追加）
+input/
+__pycache__/
+result/

@@ -122,82 +122,72 @@ class E2P:
         return cv2.remap(src_img, self.map_u, self.map_v, self.interp_method)
     
 
-def main(w_angle, h_angle, theta, phi, psi):
+def main(w_angle, h_angle, theta, phi, psi, input_path): 
 
-    # 全方位画像ファイル読み込み
-    input_folder = 'eimages'
-    if not os.path.exists(input_folder):
-        print(f"入力フォルダ '{input_folder}' が存在しません。")
+    # 入力がファイルかフォルダか判定
+    if os.path.isfile(input_path):
+        if input_path.lower().endswith(('.jpg', '.jpeg', '.png')):
+            eimage_files = [input_path]
+            is_single_file = True
+        else:
+            print(f"対応していないファイル形式: {input_path}")
+            sys.exit(1)
+    elif os.path.isdir(input_path):
+        eimage_files = glob.glob(os.path.join(input_path, '*.jpg')) + \
+                       glob.glob(os.path.join(input_path, '*.jpeg')) + \
+                       glob.glob(os.path.join(input_path, '*.png'))
+        if not eimage_files:
+            print(f"入力フォルダ '{input_path}' に画像ファイルが見つかりません。")
+            sys.exit(1)
+        is_single_file = False
+        output_folder = 'pimages'
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+    else:
+        print(f"入力パス '{input_path}' が存在しません。")
         sys.exit(1)
-    else:
-        # 拡張子がjpg、jpeg、pngのファイルを対象
-        eimage_files = glob.glob(os.path.join(input_folder, '*.jpg')) + \
-                    glob.glob(os.path.join(input_folder, '*.jpeg')) + \
-                    glob.glob(os.path.join(input_folder, '*.png'))
-
-    # 透視投影画像を格納するフォルダを作成
-    output_folder = 'pimages'
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-    else:
-        # フォルダが存在する場合は、その中のファイルを空にする
-        for file in os.listdir(output_folder):
-            try:
-                os.remove(os.path.join(output_folder, file))
-            except Exception as e:
-                print(f"ファイル削除エラー: {file}, {e}")  
-        print(f"出力フォルダ '{output_folder}' の中のファイルを削除しました。")
-
 
     for image_path in eimage_files:
-
-        # 全方位画像読み込み
         print("loading..." + image_path)
         eimage = cv2.imread(image_path)
         ewidth, eheight = eimage.shape[1], eimage.shape[0]
 
-        # 透視投影画像サイズ計算
         pwidth = int(2 * math.tan((w_angle * np.pi/180.0)/2) * (ewidth/(2*np.pi)))
         pheight = int(2 * math.tan((h_angle * np.pi/180.0)/2) * (eheight/np.pi))
         angle_param_u = pwidth * np.pi / ewidth
         angle_param_v = 0.5 * pheight * np.pi / eheight
 
-        # インスタンス生成
         e2p = E2P(ewidth, eheight, pwidth, pheight)
-
-        # 回転行列計算
         R = e2p.culc_rotation_matrix(theta, phi, psi)
-
-        # 透視投影マップ生成
-        e2p.generate_map(angle_param_u, angle_param_v, R, scale = 1.0)
+        e2p.generate_map(angle_param_u, angle_param_v, R, scale=1.0)
         pimage = e2p.generate_image(eimage)
 
-        # 透視投影画像保存
-        image_name = os.path.basename(image_path)
-        save_path = os.path.join(output_folder, image_name)
-        cv2.imwrite(save_path, pimage)
+        basename = os.path.basename(image_path)
+        name, ext = os.path.splitext(basename)
+
+        if is_single_file:
+            # 入力がファイルの場合はそのファイル名を元に出力
+            output_path = f"{name}_{int(theta)}{ext}"
+        else:
+            output_path = os.path.join(output_folder, basename)
+
+        cv2.imwrite(output_path, pimage)
+        print(f"保存しました: {output_path}")
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description='透視投影画像の画角を指定してください'
-    )
+    parser = argparse.ArgumentParser(description='透視投影画像の画角と入力指定')
     parser.add_argument('w_angle', type=int, help='画角W')
     parser.add_argument('h_angle', type=int, help='画角H')
-
-    # 任意のオプション引数（デフォルトは0度）
     parser.add_argument('--theta', type=float, default=0.0, help='視線方向のヨー角（左右）')
     parser.add_argument('--phi', type=float, default=0.0, help='視線方向のピッチ角（上下）')
     parser.add_argument('--psi', type=float, default=0.0, help='視線方向のロール角（傾き）')
+    parser.add_argument('--input', type=str, default='eimages', help='入力画像ファイルまたはフォルダのパス')
 
-    # 引数読み込み
     args = parser.parse_args()
-    w_angle, h_angle = args.w_angle, args.h_angle
-    theta, phi, psi = args.theta, args.phi, args.psi
 
-    # 引数のチェック（例：角度が0度以上の整数であるか）
-    if w_angle <= 0 or h_angle <= 0:
+    if args.w_angle <= 0 or args.h_angle <= 0:
         print("画角は正の整数で指定してください。")
         sys.exit(1)
 
-    main(w_angle, h_angle, theta, phi, psi)
+    main(args.w_angle, args.h_angle, args.theta, args.phi, args.psi, args.input)

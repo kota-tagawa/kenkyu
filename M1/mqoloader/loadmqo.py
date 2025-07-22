@@ -32,9 +32,9 @@ class LoadMQO(Model3D):
         # パスの解析
         parts = filename.split(os.sep)
         if len(parts) == 1:
-            self.path = './'
+            self.path = "."
         else:
-            self.path = os.sep.join(parts[:-1]) + os.sep
+            self.path = os.sep.join(parts[:-1])
 
         with open(filename) as file:
             lines = file.read()
@@ -45,7 +45,7 @@ class LoadMQO(Model3D):
             if line[0] == "Material":
                 self.add_material(lines,i)
             elif line[0] == "Object":
-                if line[1] == "\"cam0\"":
+                if line[1].startswith('"cam'):
                     print("カメラオブジェクトは読み込みません。")
                     break
                 self.meshes.append(Mesh3D(line[1].replace('"','')))
@@ -111,7 +111,7 @@ class LoadMQO(Model3D):
 
             if len(line) == index+10:
                 tex = line[index+9].replace('tex("','').replace('")','')
-                tex = self.path + tex
+                tex = os.path.join(self.path, tex)
                 # テクスチャファイル存在確認
                 if not os.path.exists(tex):
                     raise FileNotFoundError(f"TextureFile does not exist: {tex}")
@@ -148,6 +148,7 @@ class LoadMQO(Model3D):
         num = int(line[1])
         ### 追加
         f = []
+        uv = []
         for i in range(index+1,num+index+1):
             line = lines[i].split(' ')
             if line[0] == "\t\t3":
@@ -166,6 +167,7 @@ class LoadMQO(Model3D):
                     v3 = float(line[10].replace(')',''))
                     faces.append(Face3D([three,two,one],material,[u3,v3,u2,v2,u1,v1]))
                 f.append([one, two, three])
+                uv.append([[u1, v1], [u2, v2], [u3, v3]])
             elif line[0] == "\t\t4":
                 one   = int(line[1].replace('V(',''))
                 two   = int(line[2])
@@ -186,7 +188,9 @@ class LoadMQO(Model3D):
                     faces.append(Face3D([three, two, one],material,[u3, v3, u2, v2, u1, v1]))
                     faces.append(Face3D([one, four, three],material,[u1, v1, u4, v4, u3, v3]))
                 f.append([one, two, three, four])
+                uv.append([[u1, v1], [u2, v2], [u3, v3], [u4, v4]])
             self.set_modelface(f)
+            self.set_modeluv(uv)
     
     def set_modelvertex(self,x,y,z,v):
         self.x = x
@@ -196,3 +200,6 @@ class LoadMQO(Model3D):
     
     def set_modelface(self,f):
         self.f = f
+
+    def set_modeluv(self,uv):
+        self.uv = uv
